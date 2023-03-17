@@ -264,7 +264,7 @@ spa_json_array_new (lua_State *L)
           break;
         }
         default:
-          luaL_error (L, "Json does not support lua type ",
+          luaL_error (L, "Json does not support lua type %s",
               lua_typename(L, lua_type(L, -1)));
           break;
       }

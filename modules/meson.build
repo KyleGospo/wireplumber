@@ -159,6 +159,17 @@ shared_library(
   dependencies : [wp_dep, pipewire_dep],
 )
 
+shared_library(
+  'wireplumber-module-filters-api',
+  [
+    'module-filters-api.c',
+  ],
+  c_args : [common_c_args, '-DG_LOG_DOMAIN="m-filters-api"'],
+  install : true,
+  install_dir : wireplumber_module_dir,
+  dependencies : [wp_dep, pipewire_dep],
+)
+
 if libsystemd_dep.found() or libelogind_dep.found()
   shared_library(
     'wireplumber-module-logind',

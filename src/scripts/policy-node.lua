@@ -18,6 +18,7 @@ self.scanning = false
 self.pending_rescan = false
 self.events_skipped = false
 self.pending_error_timer = nil
+self.filters_api = Plugin.find("filters-api")
 
 function rescan()
   for si in linkables_om:iterate() do
@@ -437,9 +438,21 @@ function findDefaultLinkable (si)
   local si_props = si.properties
   local target_direction = getTargetDirection(si_props)
   local def_node_id = getDefaultNode(si_props, target_direction)
-  return linkables_om:lookup {
+  local si_target = linkables_om:lookup {
       Constraint { "node.id", "=", tostring(def_node_id) }
   }
+
+  -- get origin filter from default target if filters API is enabled
+  if self.filters_api ~= nil and si_target ~= nil then
+    local target_node_id = si_target.properties["node.id"]
+    target_node_id = self.filters_api:call("get-filter-from-target",
+        target_direction, target_node_id)
+    si_target = linkables_om:lookup {
+      Constraint { "node.id", "=", tostring(target_node_id) }
+    }
+  end
+
+  return si_target
 end
 
 function checkPassthroughCompatibility (si, si_target)
@@ -468,11 +481,18 @@ function findBestLinkable (si)
   } do
     local si_target_props = si_target.properties
     local si_target_node_id = si_target_props["node.id"]
+    local si_target_node = si:get_associated_proxy ("node")
+    local si_target_link_group = si_target_node.properties["node.link-group"]
     local priority = tonumber(si_target_props["priority.session"]) or 0
 
     Log.debug(string.format("Looking at: %s (%s)",
         tostring(si_target_props["node.name"]),
         tostring(si_target_node_id)))
+
+    -- Never use a filter as a best linkable if filters API is loaded
+    if self.filters_api ~= nil and si_target_link_group ~= nil then
+      goto skip_linkable
+    end
 
     if not canLink (si_props, si_target) then
       Log.debug("... cannot link, skip linkable")
@@ -517,6 +537,25 @@ function findBestLinkable (si)
       tostring(target_picked.properties["node.name"]),
       tostring(target_picked.properties["node.id"]),
       tostring(target_can_passthrough)))
+
+    -- get origin filter from target if filters API is enabled
+    if self.filters_api ~= nil and target_picked ~= nil then
+      local target_node_id = target_picked.properties["node.id"]
+      target_node_id = self.filters_api:call("get-filter-from-target",
+          target_direction, target_node_id)
+      target_picked = linkables_om:lookup {
+        Constraint { "node.id", "=", tostring(target_node_id) }
+      }
+      if target_picked == nil then
+        return nil, nil
+      end
+      target_can_passthrough = checkPassthroughCompatibility (si, target_picked)
+      Log.info(string.format("... best filter picked: %s (%s), can_passthrough:%s",
+        tostring(target_picked.properties["node.name"]),
+        tostring(target_picked.properties["node.id"]),
+        tostring(target_can_passthrough)))
+    end
+
     return target_picked, target_can_passthrough
   else
     return nil, nil
@@ -564,11 +603,38 @@ function lookupLink (si_id, si_target_id)
   return link
 end
 
+function checkFilter (si, handle_nonstreams)
+  -- handle all filter nodes if filters API is not loaded
+  if self.filters_api == nil then
+    return true
+  end
+
+  -- always handle filters if handle_nonstreams is true, even if it is disabled
+  if handle_nonstreams then
+    return true
+  end
+
+  -- always return true if this is not a filter
+  local node = si:get_associated_proxy ("node")
+  local link_group = node.properties["node.link-group"]
+  if link_group == nil then
+    return true
+  end
+
+  local direction = getTargetDirection(si.properties)
+  return self.filters_api:call("is-filter-enabled", direction, link_group)
+end
+
 function checkLinkable(si, handle_nonstreams)
   -- only handle stream session items
   local si_props = si.properties
   if not si_props or (si_props["item.node.type"] ~= "stream"
         and not handle_nonstreams)  then
+    return false
+  end
+
+  -- check filters
+  if not checkFilter (si, handle_nonstreams) then
     return false
   end
 
@@ -652,6 +718,37 @@ function checkFollowDefault (si, si_target, has_node_defined_target)
   end
 end
 
+function findFilterTarget (si)
+  local node = si:get_associated_proxy ("node")
+  local direction = getTargetDirection (si.properties)
+  local link_group = node.properties["node.link-group"]
+  local target_id = -1
+
+  -- always return nil if filters API is not loaded
+  if self.filters_api == nil then
+    return nil
+  end
+
+  if link_group == nil then
+    -- if this is a client stream that is not a filter, link it to the highest
+    -- priority filter that does not have a group, if any.
+    target_id = self.filters_api:call("get-default-filter", direction)
+  else
+    -- if this is a filter, get its target
+    target_id = self.filters_api:call("get-filter-target",
+      direction, link_group)
+  end
+
+  if (target_id == -1) then
+    return nil
+  end
+
+  Log.info (".. filter target ID is " .. tostring(target_id))
+  return linkables_om:lookup {
+      Constraint { "node.id", "=", tostring(target_id) }
+  }
+end
+
 function handleLinkable (si)
   if checkPending () then
     return
@@ -683,9 +780,17 @@ function handleLinkable (si)
   local si_target, has_defined_target, has_node_defined_target
       = findDefinedTarget(si_props)
   local can_passthrough = si_target and canPassthrough(si, si_target)
-
   if si_target and si_must_passthrough and not can_passthrough then
     si_target = nil
+  end
+
+  -- find filter target (always returns nil for non filters)
+  if si_target == nil then
+    si_target = findFilterTarget(si)
+    local can_passthrough = si_target and canPassthrough(si, si_target)
+    if si_target and si_must_passthrough and not can_passthrough then
+      si_target = nil
+    end
   end
 
   -- if the client has seen a target that we haven't yet prepared, schedule
@@ -872,6 +977,17 @@ links_om = ObjectManager {
 -- listen for default node changes if config.follow is enabled
 if config.follow and default_nodes ~= nil then
   default_nodes:connect("changed", function ()
+    scheduleRescan ()
+  end)
+end
+
+-- listen for filter node changes
+if self.filters_api ~= nil then
+  self.filters_api:connect("changed", function ()
+    -- unlink all the filters and schedule rescan
+    for si in linkables_om:iterate { Constraint { "node.link-group", "+" } } do
+      unhandleLinkable (si)
+    end
     scheduleRescan ()
   end)
 end

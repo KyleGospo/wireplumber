@@ -12,6 +12,9 @@ default_policy.policy = {
   -- surround audio if echo-cancel is enabled.
   ["filter.forward-format"] = false,
 
+  -- Whether to enable smart filter policy or not (experimental feature)
+  ["filter.smart"] = false,
+
   -- Set to 'true' to disable channel splitting & merging on nodes and enable
   -- passthrough of audio in the same format as the format of the device.
   -- Note that this breaks JACK support; it is generally not recommended
@@ -70,6 +73,12 @@ function default_policy.enable()
 
   -- API to access default nodes from scripts
   load_module("default-nodes-api")
+
+  -- Load smart filter policy if requested
+  if default_policy.policy["filter.smart"] then
+    load_script("filters-metadata.lua", default_policy.filters_metadata)
+    load_module("filters-api")
+  end
 
   -- API to access mixer controls, needed for volume ducking
   load_module("mixer-api")
