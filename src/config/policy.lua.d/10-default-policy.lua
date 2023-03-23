@@ -13,7 +13,7 @@ default_policy.policy = {
   ["filter.forward-format"] = false,
 
   -- Whether to enable smart filter policy or not (experimental feature)
-  ["filter.smart"] = false,
+  ["filter.smart"] = true,
 
   -- Set to 'true' to disable channel splitting & merging on nodes and enable
   -- passthrough of audio in the same format as the format of the device.
