@@ -6,7 +6,7 @@ stream_defaults.properties = {
   ["restore-props"] = true,
 
   -- whether to restore the last stream target or not
-  ["restore-target"] = true,
+  ["restore-target"] = false,
 
   -- the default channel volume for new streams whose props were never saved
   -- previously. This is only used if "restore-props" is set to true.
