@@ -230,33 +230,6 @@ wp_filters_api_get_filter_from_target (WpFiltersApi * self,
   return res;
 }
 
-static gint
-wp_filters_api_get_default_filter (WpFiltersApi * self, const gchar *direction)
-{
-  WpDirection dir = WP_DIRECTION_INPUT;
-  GList *filters;
-
-  g_return_val_if_fail (direction, -1);
-
-  /* Get the filters for the given direction */
-  if (g_str_equal (direction, "output") || g_str_equal (direction, "Output"))
-    dir = WP_DIRECTION_OUTPUT;
-  filters = self->filters[dir];
-
-  /* The default filter is the highest priority filter without target, this is
-   * the first filer that is enabled because the list is sorted by priority */
-  while (filters) {
-    Filter *f = (Filter *) filters->data;
-    if (f->enabled && !f->target)
-      return wp_proxy_get_bound_id (WP_PROXY (f->node));
-
-    /* Advance */
-    filters = g_list_next (filters);
-  }
-
-  return -1;
-}
-
 static void
 sync_changed (WpCore * core, GAsyncResult * res, WpFiltersApi * self)
 {
@@ -880,13 +853,6 @@ wp_filters_api_class_init (WpFiltersApiClass * klass)
       (GCallback) wp_filters_api_get_filter_from_target,
       NULL, NULL, NULL,
       G_TYPE_INT, 2, G_TYPE_STRING, G_TYPE_INT);
-
-  signals[ACTION_GET_DEFAULT_FILTER] = g_signal_new_class_handler (
-      "get-default-filter", G_TYPE_FROM_CLASS (klass),
-      G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
-      (GCallback) wp_filters_api_get_default_filter,
-      NULL, NULL, NULL,
-      G_TYPE_INT, 1, G_TYPE_STRING);
 
   signals[SIGNAL_CHANGED] = g_signal_new (
       "changed", G_TYPE_FROM_CLASS (klass),

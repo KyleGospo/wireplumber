@@ -719,9 +719,6 @@ function checkFollowDefault (si, si_target, has_node_defined_target)
 end
 
 function findFilterTarget (si)
-  local node = si:get_associated_proxy ("node")
-  local direction = getTargetDirection (si.properties)
-  local link_group = node.properties["node.link-group"]
   local target_id = -1
 
   -- always return nil if filters API is not loaded
@@ -729,16 +726,16 @@ function findFilterTarget (si)
     return nil
   end
 
+  -- always return nil if this is not a filter
+  local node = si:get_associated_proxy ("node")
+  local link_group = node.properties["node.link-group"]
   if link_group == nil then
-    -- if this is a client stream that is not a filter, link it to the highest
-    -- priority filter that does not have a group, if any.
-    target_id = self.filters_api:call("get-default-filter", direction)
-  else
-    -- if this is a filter, get its target
-    target_id = self.filters_api:call("get-filter-target",
-      direction, link_group)
+    return nil
   end
 
+  -- get the filter target
+  local direction = getTargetDirection (si.properties)
+  target_id = self.filters_api:call("get-filter-target", direction, link_group)
   if (target_id == -1) then
     return nil
   end
