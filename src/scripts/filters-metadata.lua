@@ -30,8 +30,11 @@ f_metadata:activate(Features.ALL, function (m, e)
 
   -- Set targets metadata
   local targets = {}
-  for name, props in pairs(config["targets"]) do
-    targets[name] = Json.Object (props)
+  for name, value in pairs(config["targets"]) do
+    targets[name] = Json.Object {
+        exclusive = value.exclusive and true or false,
+        props = Json.Object (value.props)
+    }
   end
   local targets_json = Json.Object (targets)
   m:set (0, "filters.configured.targets", "Spa:String:JSON",

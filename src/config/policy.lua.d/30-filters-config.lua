@@ -59,16 +59,22 @@ default_policy.filters_metadata = {
     }
   },
 
-  -- The target node properties (any node properties can be defined)
+  -- The filter targets
   ["targets"] = {
     ["speakers"] = {
-      ["media.class"] = "Audio/Sink",
-      ["alsa.card_name"] = "acp5x",
-      ["device.profile.description"] = "Speaker",
+      ["exclusive"] = false,
+      ["props"] = {
+        ["media.class"] = "Audio/Sink",
+        ["alsa.card_name"] = "acp5x",
+        ["device.profile.description"] = "Speaker",
+      }
     },
     ["microphone"] = {
-      ["media.class"] = "Audio/Source",
-      ["alsa.card_name"] = "acp5x",
+      ["exclusive"] = false,
+      ["props"] = {
+        ["media.class"] = "Audio/Source",
+        ["alsa.card_name"] = "acp5x",
+      }
     }
   }
 }

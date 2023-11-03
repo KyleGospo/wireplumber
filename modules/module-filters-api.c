@@ -49,6 +49,12 @@ struct _Filter {
 };
 typedef struct _Filter Filter;
 
+struct _Target {
+  gboolean exclusive;
+  WpNode *node;
+};
+typedef struct _Target Target;
+
 static guint
 get_filter_priority (const gchar *link_group)
 {
@@ -85,6 +91,22 @@ filter_free (Filter *f)
   g_clear_object (&f->node);
   g_clear_object (&f->stream);
   g_free (f);
+}
+
+static Target *
+target_new (gboolean exclusive, WpNode *node)
+{
+  Target *t = g_malloc0 (sizeof (Target));
+  t->exclusive = exclusive;
+  t->node = node ? g_object_ref (node) : NULL;
+  return t;
+}
+
+static void
+target_free (Target *t)
+{
+  g_clear_object (&t->node);
+  g_free (t);
 }
 
 static gint
@@ -133,16 +155,18 @@ wp_filters_api_is_filter_enabled (WpFiltersApi * self, const gchar *direction,
   return found->enabled;
 }
 
-static gint
+static WpSpaJson *
 wp_filters_api_get_filter_target (WpFiltersApi * self, const gchar *direction,
     const gchar *link_group)
 {
   WpDirection dir = WP_DIRECTION_INPUT;
   GList *filters;
   Filter *found;
+  g_autoptr (WpSpaJson) res = wp_spa_json_new_object (
+      "exclusive", "b", FALSE, "bound_id", "i", -1, NULL);
 
-  g_return_val_if_fail (direction, -1);
-  g_return_val_if_fail (link_group, -1);
+  g_return_val_if_fail (direction, g_steal_pointer (&res));
+  g_return_val_if_fail (link_group, g_steal_pointer (&res));
 
   /* Get the filters for the given direction */
   if (g_str_equal (direction, "output") || g_str_equal (direction, "Output"))
@@ -153,10 +177,10 @@ wp_filters_api_get_filter_target (WpFiltersApi * self, const gchar *direction,
   filters = g_list_find_custom (filters, link_group,
       (GCompareFunc) filter_equal_func);
   if (!filters)
-    return -1;
+    return g_steal_pointer (&res);
   found = filters->data;
   if (!found->enabled)
-    return -1;
+    return g_steal_pointer (&res);
 
   /* Return the previous filter with matching target that is enabled */
   while ((filters = g_list_previous (filters))) {
@@ -164,18 +188,27 @@ wp_filters_api_get_filter_target (WpFiltersApi * self, const gchar *direction,
     if ((prev->target == found->target ||
         (prev->target && found->target &&
         g_str_equal (prev->target, found->target))) &&
-        prev->enabled)
-      return wp_proxy_get_bound_id (WP_PROXY (prev->node));
+        prev->enabled) {
+      return wp_spa_json_new_object (
+          "exclusive", "b", FALSE,
+          "bound_id", "i", wp_proxy_get_bound_id (WP_PROXY (prev->node)),
+          NULL);
+    }
   }
 
   /* Find the target */
   if (found->target) {
-    WpNode *node = g_hash_table_lookup (self->targets, found->target);
-    if (node)
-      return wp_proxy_get_bound_id (WP_PROXY (node));
+    Target *t = g_hash_table_lookup (self->targets, found->target);
+    if (t) {
+      return wp_spa_json_new_object (
+          "exclusive", "b", t->exclusive,
+          "bound_id", "i",
+              t->node ? (gint)wp_proxy_get_bound_id (WP_PROXY (t->node)) : -1,
+          NULL);
+    }
   }
 
-  return -1;
+  return g_steal_pointer (&res);
 }
 
 static gint
@@ -198,12 +231,17 @@ wp_filters_api_get_filter_from_target (WpFiltersApi * self,
   /* Find the first target matching target_id */
   while (filters) {
     Filter *f = (Filter *) filters->data;
-    gint f_target_id = wp_filters_api_get_filter_target (self, direction,
-        f->link_group);
-    if (f_target_id == target_id && f->enabled) {
-      target = f->target;
-      found = TRUE;
-      break;
+    if (f->enabled) {
+      gint f_target_id;
+      g_autoptr (WpSpaJson) f_target = wp_filters_api_get_filter_target (self,
+          direction, f->link_group);
+      if (f_target && wp_spa_json_is_object (f_target) &&
+          wp_spa_json_object_get (f_target, "bound_id", "i", &f_target_id, NULL)
+          && f_target_id == target_id) {
+        target = f->target;
+        found = TRUE;
+        break;
+      }
     }
 
     /* Advance */
@@ -323,9 +361,11 @@ reevaluate_targets (WpFiltersApi *self)
   for (; wp_iterator_next (it, &item); g_value_unset (&item)) {
     WpSpaJson *j = g_value_get_boxed (&item);
     g_autofree gchar *key = NULL;
-    WpSpaJson *props;
-    g_autoptr (WpNode) target = NULL;
-    WpNode *curr_target;
+    WpSpaJson *value;
+    gboolean exclusive = FALSE;
+    g_autoptr (WpSpaJson) props = NULL;
+    g_autoptr (WpNode) target_node = NULL;
+    Target *curr_target;
 
     key = wp_spa_json_parse_string (j);
     g_value_unset (&item);
@@ -334,27 +374,36 @@ reevaluate_targets (WpFiltersApi *self)
         "Could not get valid key-value pairs from target object");
       break;
     }
-    props = g_value_get_boxed (&item);
+    value = g_value_get_boxed (&item);
+    if (!value || !wp_spa_json_is_object (value)) {
+      wp_warning_object (self, "Target value must be a JSON object");
+      break;
+    }
 
-    /* Get current target */
+    /* Get exclusive */
+    wp_spa_json_object_get (value, "exclusive", "b", &exclusive, NULL);
+
+    /* Get target node */
+    wp_spa_json_object_get (value, "props", "J", &props, NULL);
+    if (props)
+      target_node = find_target_node (self, props);
+
+    /* Update values if target exists in the table, otherwise add new target */
     curr_target = g_hash_table_lookup (self->targets, key);
-
-    /* Find the node and insert it into the table if found */
-    target = find_target_node (self, props);
-    if (target) {
-      /* Check if the target changed */
-      if (curr_target) {
-        guint32 target_bound_id = wp_proxy_get_bound_id (WP_PROXY (target));
-        guint32 curr_bound_id = wp_proxy_get_bound_id (WP_PROXY (curr_target));
-        if (target_bound_id != curr_bound_id)
-          changed = TRUE;
-      }
-
-      g_hash_table_insert (self->targets, g_strdup (key),
-          g_steal_pointer (&target));
-    } else {
-      if (curr_target)
+    if (curr_target) {
+      if (curr_target->exclusive != exclusive) {
+        curr_target->exclusive = exclusive;
         changed = TRUE;
+      }
+      if (curr_target->node != target_node) {
+        g_clear_object (&curr_target->node);
+        curr_target->node = g_steal_pointer (&target_node);
+        changed = TRUE;
+      }
+    } else {
+      g_hash_table_insert (self->targets, g_strdup (key),
+            target_new (exclusive, target_node));
+      changed = TRUE;
     }
   }
 
@@ -790,7 +839,7 @@ wp_filters_api_enable (WpPlugin * plugin, WpTransition * transition)
   g_autoptr (WpCore) core = wp_object_get_core (WP_OBJECT (self));
 
   self->targets = g_hash_table_new_full (g_str_hash, g_str_equal, g_free,
-      g_object_unref);
+      (GDestroyNotify) target_free);
 
   /* Create the metadata object manager */
   self->metadata_om = wp_object_manager_new ();
@@ -845,7 +894,7 @@ wp_filters_api_class_init (WpFiltersApiClass * klass)
       G_SIGNAL_RUN_LAST | G_SIGNAL_ACTION,
       (GCallback) wp_filters_api_get_filter_target,
       NULL, NULL, NULL,
-      G_TYPE_INT, 2, G_TYPE_STRING, G_TYPE_STRING);
+      WP_TYPE_SPA_JSON, 2, G_TYPE_STRING, G_TYPE_STRING);
 
   signals[ACTION_GET_FILTER_FROM_TARGET] = g_signal_new_class_handler (
       "get-filter-from-target", G_TYPE_FROM_CLASS (klass),
