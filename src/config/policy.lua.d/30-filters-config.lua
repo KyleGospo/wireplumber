@@ -73,7 +73,7 @@ default_policy.filters_metadata = {
       ["exclusive"] = false,
       ["props"] = {
         ["media.class"] = "Audio/Source",
-        ["alsa.card_name"] = "acp5x",
+        ["alsa.card_name"] = "sof-nau8821-max",
       }
     }
   }
